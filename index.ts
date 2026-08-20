@@ -162,7 +162,8 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       server = await bindSocket(sockPath, (frame) => onFrame(frame));
       await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: "idle" });
       dbg(`started name=${selfName} pid=${pid} sock=${sockPath} session=${sessionId}`);
-      notify(`pi-claude-link active as "${selfName}" — reachable from Claude Code /list-agents`, "info");
+      if (!(process.env.PI_CLAUDE_LINK_QUIET || existsSync("/tmp/pi-claude-link-quiet.on")))
+        notify(`pi-claude-link active as "${selfName}" — reachable from Claude Code /list-agents`, "info");
     } catch (e) {
       started = false;
       notify(`pi-claude-link failed to start: ${(e as Error).message}`, "error");
