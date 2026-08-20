@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Startup banner is now off by default. Opt in via env `PI_CLAUDE_LINK_BANNER`
+  or the sentinel file `/tmp/pi-claude-link-banner.on`. (Previously the banner
+  printed by default and could be silenced with `PI_CLAUDE_LINK_QUIET` /
+  `/tmp/pi-claude-link-quiet.on`; those no longer have any effect.)
+
 ### Fixed
 - Peer name now tracks the pi session's display name. Previously the name was
   captured once at `session_start`, so a name set via `/name`, `--name`, RPC, or

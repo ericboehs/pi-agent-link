@@ -162,7 +162,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       server = await bindSocket(sockPath, (frame) => onFrame(frame));
       await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: "idle" });
       dbg(`started name=${selfName} pid=${pid} sock=${sockPath} session=${sessionId}`);
-      if (!(process.env.PI_CLAUDE_LINK_QUIET || existsSync("/tmp/pi-claude-link-quiet.on")))
+      // Startup banner is off by default; opt in via env PI_CLAUDE_LINK_BANNER
+      // or the sentinel /tmp/pi-claude-link-banner.on.
+      if (process.env.PI_CLAUDE_LINK_BANNER || existsSync("/tmp/pi-claude-link-banner.on"))
         notify(`pi-claude-link active as "${selfName}" — reachable from Claude Code /list-agents`, "info");
     } catch (e) {
       started = false;

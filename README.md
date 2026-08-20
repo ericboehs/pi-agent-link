@@ -139,6 +139,9 @@ node --experimental-strip-types test/roundtrip.mjs    # inbound relay + outbound
 Enable debug logging with `PI_CLAUDE_LINK_DEBUG=1` (or `touch
 /tmp/pi-claude-link-debug.on`); logs go to `/tmp/pi-claude-link-debug.log`.
 
+The startup banner (`pi-claude-link active as "…"`) is off by default. Enable it
+with `PI_CLAUDE_LINK_BANNER=1` (or `touch /tmp/pi-claude-link-banner.on`).
+
 ## Compatibility
 
 Verified against **pi-coding-agent 0.80.6** and **Claude Code 2.1.224**. The Claude
