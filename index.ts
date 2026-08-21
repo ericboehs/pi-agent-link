@@ -16,7 +16,7 @@ import {
   ccSocksDir, bindSocket, registerPeer, updatePeer, deregisterPeer,
   firstFreeName, losesNameRace,
   listClaudeSessions, resolveTarget, sendToClaude, stripEnvelope, receiptFrame, sendFrame,
-  peerLabel,
+  peerLabel, planDedupe, renamePeer,
   slugFromCwd, peerNameBySock,
 } from "./claude-protocol.ts";
 import path from "node:path";
@@ -297,9 +297,32 @@ export default function piMeshExtension(pi: ExtensionAPI) {
 
   // ---- convenience command -------------------------------------------------
   pi.registerCommand("claude-link", {
-    description: "List Claude Code sessions you can message (via the claude-link tool)",
-    handler: async (_args, ctx) => {
+    description: "List Claude Code sessions you can message; 'dedupe' un-collides their names",
+    handler: async (args, ctx) => {
       const rows = await listClaudeSessions({ excludeSock: sockPath });
+      if (args.trim() === "dedupe") {
+        // Include ourselves: our name is one of the ones that can collide.
+        const all = [...rows, { pid, name: selfName, cwd: sessionCwd, status: "idle", sock: sockPath, startedAt, entrypoint: "pi", nameSource }];
+        const plans = planDedupe(all);
+        if (!plans.length) { ctx.ui.notify("No duplicate names among live sessions.", "info"); return; }
+        const done: string[] = [];
+        const failed: string[] = [];
+        for (const plan of plans) {
+          if (plan.peer.pid === pid) { selfName = plan.to; await updatePeer(pid, { name: selfName, nameSource: "derived" }).catch(() => {}); done.push(`${plan.from} → ${plan.to} (us)`); continue; }
+          try {
+            await renamePeer(plan.peer.sock, plan.to);
+            done.push(`${plan.from} → ${plan.to} (pid ${plan.peer.pid})`);
+          } catch (e) {
+            failed.push(`${plan.from} (pid ${plan.peer.pid}): ${(e as Error).message}`);
+          }
+        }
+        ctx.ui.notify(
+          [done.length ? `Renamed:\n${done.map((d) => `  ${d}`).join("\n")}` : "", failed.length ? `Failed:\n${failed.map((f) => `  ${f}`).join("\n")}` : ""]
+            .filter(Boolean).join("\n"),
+          failed.length ? "warning" : "info",
+        );
+        return;
+      }
       if (!rows.length) { ctx.ui.notify("No live Claude sessions found.", "info"); return; }
       ctx.ui.notify(`Reachable: ${rows.map((r) => peerLabel(r, rows)).join(", ")}`, "info");
     },

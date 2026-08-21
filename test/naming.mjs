@@ -17,7 +17,7 @@ const REG = path.join(home, ".claude", "sessions");
 mkdirSync(REG, { recursive: true });
 
 // CLAUDE_REGISTRY is resolved at import time, so HOME must be set first.
-const { firstFreeName, losesNameRace, listClaudeSessions, resolveTarget, peerLabel } =
+const { firstFreeName, losesNameRace, listClaudeSessions, resolveTarget, peerLabel, planDedupe } =
   await import("../claude-protocol.ts");
 
 const servers = [];
@@ -88,6 +88,37 @@ test("labels stay clean when names are unique", async () => {
   const rows = await listClaudeSessions({});
   const solo = rows.find((r) => r.name === "pi-solo");
   assert.equal(peerLabel(solo, rows), "pi-solo");
+});
+
+test("dedupe moves the newer duplicates and leaves everything else alone", () => {
+  const rows = [
+    { pid: 1, name: "pi-work", startedAt: 10, entrypoint: "pi", nameSource: "derived", sock: "a", cwd: "/w", status: "idle" },
+    { pid: 2, name: "pi-work", startedAt: 20, entrypoint: "pi", nameSource: "derived", sock: "b", cwd: "/w", status: "idle" },
+    { pid: 3, name: "pi-work", startedAt: 30, entrypoint: "pi", nameSource: "derived", sock: "c", cwd: "/w", status: "idle" },
+    { pid: 4, name: "pi-solo", startedAt: 40, entrypoint: "pi", nameSource: "derived", sock: "d", cwd: "/s", status: "idle" },
+  ];
+  assert.deepEqual(
+    planDedupe(rows).map((p) => `${p.peer.pid}:${p.from}->${p.to}`),
+    ["2:pi-work->pi-work-2", "3:pi-work->pi-work-3"],
+    "oldest keeps the name; the rest take free slots",
+  );
+
+  // An existing -2 is part of the same series, so the mover skips to -3.
+  const withSuffix = [
+    rows[0],
+    { ...rows[1], name: "pi-work-2" },
+    rows[2],
+  ];
+  assert.deepEqual(planDedupe(withSuffix).map((p) => p.to), ["pi-work-3"]);
+
+  // Names the user chose, and peers that are not pi, are never touched.
+  const protectedRows = [
+    rows[0],
+    { ...rows[1], nameSource: "user" },
+    { ...rows[2], entrypoint: "claude" },
+  ];
+  assert.deepEqual(planDedupe(protectedRows), []);
+  assert.deepEqual(planDedupe([rows[3]]), [], "unique names need no plan");
 });
 
 test.after(() => { for (const s of servers) s.close(); });

@@ -28,6 +28,8 @@ export interface ClaudePeer {
   startedAt?: number;
   sock: string;
   live?: boolean;
+  entrypoint?: string;
+  nameSource?: string;
 }
 
 export interface UserFrame {
@@ -93,6 +95,8 @@ export async function listClaudeSessions(opts: { excludeSock?: string } = {}): P
       status: typeof s.status === "string" ? s.status : "unknown",
       kind: s.kind,
       startedAt: s.startedAt,
+      entrypoint: typeof s.entrypoint === "string" ? s.entrypoint : undefined,
+      nameSource: typeof s.nameSource === "string" ? s.nameSource : undefined,
       sock,
     });
   }
@@ -132,6 +136,51 @@ export function losesNameRace(self: { startedAt: number; pid: number }, rival: C
   const rivalStart = rival.startedAt ?? 0;
   if (rivalStart !== self.startedAt) return rivalStart < self.startedAt;
   return (rival.pid ?? 0) < self.pid;
+}
+
+export interface RenamePlan { peer: ClaudePeer; from: string; to: string; }
+
+/** "pi-dotfiles-2" and "pi-dotfiles" contend for the same series. */
+function seriesBase(name: string): string {
+  return name.replace(/-\d+$/, "");
+}
+
+/**
+ * Which peers should move so every live name is unique.
+ *
+ * Sessions that predate unique-name registration keep their duplicates until
+ * they restart; this converges them in place instead. Same rule as the startup
+ * race — oldest keeps the name — and only pi peers with derived names are
+ * moved: a name the user chose is theirs, and non-pi peers cannot be renamed.
+ */
+export function planDedupe(rows: ClaudePeer[]): RenamePlan[] {
+  const taken = new Set(rows.map((r) => r.name));
+  const groups = new Map<string, ClaudePeer[]>();
+  for (const row of rows) {
+    const group = groups.get(row.name);
+    if (group) group.push(row);
+    else groups.set(row.name, [row]);
+  }
+
+  const plans: RenamePlan[] = [];
+  for (const [name, peers] of groups) {
+    if (peers.length < 2) continue;
+    const ordered = [...peers].sort(
+      (a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || (a.pid ?? 0) - (b.pid ?? 0),
+    );
+    for (const peer of ordered.slice(1)) {
+      if (peer.entrypoint !== "pi" || peer.nameSource === "user") continue;
+      const to = firstFreeName(seriesBase(name), taken);
+      taken.add(to);
+      plans.push({ peer, from: name, to });
+    }
+  }
+  return plans;
+}
+
+/** Ask a pi peer to rename itself; it updates its own registry entry. */
+export function renamePeer(sock: string, name: string): Promise<string> {
+  return sendFrame(sock, { type: "control", action: "rename", name });
 }
 
 /** Resolve a target by exact name, name prefix, pid, or sessionId. */
