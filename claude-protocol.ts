@@ -102,17 +102,62 @@ export async function listClaudeSessions(opts: { excludeSock?: string } = {}): P
 
 export interface ResolveResult { target?: ClaudePeer; error?: string; candidates?: string[]; }
 
-/** Resolve a target by exact name, name prefix, or sessionId. */
+/** Disambiguate identically named peers in user-facing lists. */
+export function peerLabel(peer: ClaudePeer, rows: ClaudePeer[]): string {
+  const shared = rows.filter((r) => r.name === peer.name).length > 1;
+  return shared ? `${peer.name} (pid ${peer.pid})` : peer.name;
+}
+
+/**
+ * First unclaimed name in the `base`, `base-2`, `base-3`… series.
+ *
+ * Derived names come from the directory, so several pis in one checkout all
+ * want the same one; the first keeps it and later ones take a suffix.
+ */
+export function firstFreeName(base: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let n = 2; n <= 99; n++) {
+    const candidate = `${base}-${n}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base}-${process.pid}`;
+}
+
+/**
+ * Total order over peers claiming one name: oldest wins, pid breaks ties.
+ * Both sides of a race must agree, so this reads only registry values.
+ */
+export function losesNameRace(self: { startedAt: number; pid: number }, rival: ClaudePeer): boolean {
+  const rivalStart = rival.startedAt ?? 0;
+  if (rivalStart !== self.startedAt) return rivalStart < self.startedAt;
+  return (rival.pid ?? 0) < self.pid;
+}
+
+/** Resolve a target by exact name, name prefix, pid, or sessionId. */
 export async function resolveTarget(nameOrId: string, opts: { excludeSock?: string } = {}): Promise<ResolveResult> {
   const rows = await listClaudeSessions(opts);
-  let hit = rows.find((r) => r.sessionId === nameOrId) || rows.find((r) => r.name === nameOrId);
-  if (!hit) {
-    const pfx = rows.filter((r) => r.name && r.name.startsWith(nameOrId));
-    if (pfx.length === 1) hit = pfx[0];
-    else if (pfx.length > 1) return { error: `ambiguous: ${pfx.map((r) => r.name).join(", ")}` };
-  }
-  if (!hit) return { error: `no live Claude session matches "${nameOrId}"`, candidates: rows.map((r) => r.name) };
-  return { target: hit };
+  const ambiguous = (matches: ClaudePeer[]): ResolveResult => ({
+    error: `"${nameOrId}" matches ${matches.length} live sessions — address one by pid`,
+    candidates: matches.map((r) => peerLabel(r, rows)),
+  });
+
+  const byId = rows.filter((r) => r.sessionId === nameOrId);
+  if (byId.length === 1) return { target: byId[0] };
+  // A pid is unique by construction, so it is always an unambiguous handle.
+  const byPid = /^\d+$/.test(nameOrId) ? rows.filter((r) => String(r.pid) === nameOrId) : [];
+  if (byPid.length === 1) return { target: byPid[0] };
+
+  const exact = rows.filter((r) => r.name === nameOrId);
+  if (exact.length === 1) return { target: exact[0] };
+  // Never silently pick one of several same-named peers: that misdelivers.
+  if (exact.length > 1) return ambiguous(exact);
+
+  const pfx = rows.filter((r) => r.name && r.name.startsWith(nameOrId));
+  if (pfx.length === 1) return { target: pfx[0] };
+  if (pfx.length > 1) return ambiguous(pfx);
+
+  return { error: `no live Claude session matches "${nameOrId}"`, candidates: rows.map((r) => peerLabel(r, rows)) };
 }
 
 // ------------------------------------------------------------------- envelope
@@ -240,13 +285,15 @@ function procStart(pid: number): Promise<string | undefined> {
 /** Write ~/.claude/sessions/<pid>.json so Claude lists this session as a peer. */
 export async function registerPeer(o: {
   pid: number; sessionId?: string; name: string; cwd: string; sockPath: string; status?: string;
+  startedAt?: number; nameSource?: string;
 }): Promise<void> {
   await mkdir(CLAUDE_REGISTRY, { recursive: true }).catch(() => {});
   const entry = {
     pid: o.pid,
     sessionId: o.sessionId || randomUUID(),
     cwd: o.cwd || process.cwd(),
-    startedAt: Date.now(),
+    // Caller-supplied so both sides of a name race compare the same number.
+    startedAt: o.startedAt ?? Date.now(),
     procStart: await procStart(o.pid),
     version: "pi-claude-link",
     peerProtocol: 1,
@@ -254,7 +301,7 @@ export async function registerPeer(o: {
     entrypoint: "pi",
     messagingSocketPath: o.sockPath,
     name: o.name,
-    nameSource: "derived",
+    nameSource: o.nameSource || "derived",
     status: o.status || "idle",
   };
   await writeFile(path.join(CLAUDE_REGISTRY, `${o.pid}.json`), JSON.stringify(entry, null, 2));

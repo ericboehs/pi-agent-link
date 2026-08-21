@@ -14,7 +14,9 @@ import type { AgentEndEvent, AgentMessage, ExtensionAPI, ExtensionContext } from
 import { Type } from "typebox";
 import {
   ccSocksDir, bindSocket, registerPeer, updatePeer, deregisterPeer,
+  firstFreeName, losesNameRace,
   listClaudeSessions, resolveTarget, sendToClaude, stripEnvelope, receiptFrame, sendFrame,
+  peerLabel,
   slugFromCwd, peerNameBySock,
 } from "./claude-protocol.ts";
 import path from "node:path";
@@ -42,15 +44,44 @@ export default function piMeshExtension(pi: ExtensionAPI) {
 
   const fallbackName = () => `pi-${slugFromCwd(sessionCwd || process.cwd())}`;
 
+  // Derived names come from the directory, so every pi in one checkout wants
+  // the same one. Claim the first free slot instead of shipping a duplicate.
+  const startedAt = Date.now();
+  let nameSource: "user" | "derived" = "derived";
+  const liveNames = async (): Promise<string[]> =>
+    (await listClaudeSessions({ excludeSock: sockPath })).map((r) => r.name);
+
+  /**
+   * Two pis starting in the same instant can claim the same slot, so re-check
+   * after registering: the oldest keeps the name (pid breaks ties) and the
+   * others move on. Both sides read the same registry values, so exactly one
+   * winner emerges per round and the loop converges.
+   */
+  async function settleNameRace(): Promise<void> {
+    for (let attempt = 0; attempt < 5 && nameSource === "derived"; attempt++) {
+      await new Promise((r) => setTimeout(r, 150 + Math.random() * 150));
+      const rows = await listClaudeSessions({ excludeSock: sockPath });
+      const rivals = rows.filter((r) => r.name === selfName);
+      if (!rivals.some((rival) => losesNameRace({ startedAt, pid }, rival))) return;
+      selfName = firstFreeName(fallbackName(), rows.map((r) => r.name));
+      await updatePeer(pid, { name: selfName, nameSource: "derived" }).catch(() => {});
+      dbg(`yielded a contested name, now ${selfName}`);
+    }
+  }
+
   // Apply a (possibly cleared) pi session name to our peer identity. Once we've
   // registered, push it to Claude's registry so /list-agents updates live.
   async function applyName(name?: string): Promise<void> {
-    const next = (name || "").trim() || fallbackName();
+    const trimmed = (name || "").trim();
+    // A name the user chose is theirs verbatim; only derived names get suffixed.
+    const next = trimmed || firstFreeName(fallbackName(), started ? await liveNames() : []);
     if (next === selfName) return;
     selfName = next;
+    nameSource = trimmed ? "user" : "derived";
     if (started) {
-      await updatePeer(pid, { name: selfName, nameSource: name ? "user" : "derived" }).catch(() => {});
+      await updatePeer(pid, { name: selfName, nameSource }).catch(() => {});
       dbg(`renamed peer to ${selfName}`);
+      if (nameSource === "derived") await settleNameRace();
     }
   }
 
@@ -155,13 +186,16 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     sessionCwd = ctx.cwd || process.cwd();
     const cwd = sessionCwd;
     const sessionId = ctx.sessionManager.getSessionId() || undefined;
-    selfName = (pi.getSessionName() || "").trim() || fallbackName();
     sockPath = path.join(ccSocksDir(), `${pid}.sock`);
     ownFrom = `uds:${sockPath}`;
+    const chosen = (pi.getSessionName() || "").trim();
+    nameSource = chosen ? "user" : "derived";
+    selfName = chosen || firstFreeName(fallbackName(), await liveNames());
     try {
       server = await bindSocket(sockPath, (frame) => onFrame(frame));
-      await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: "idle" });
+      await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: "idle", startedAt, nameSource });
       dbg(`started name=${selfName} pid=${pid} sock=${sockPath} session=${sessionId}`);
+      if (nameSource === "derived") void settleNameRace();
       // Startup banner is off by default; opt in via env PI_CLAUDE_LINK_BANNER
       // or the sentinel /tmp/pi-claude-link-banner.on.
       if (process.env.PI_CLAUDE_LINK_BANNER || existsSync("/tmp/pi-claude-link-banner.on"))
@@ -217,7 +251,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       if (params.action === "list") {
         const rows = await listClaudeSessions({ excludeSock });
         if (!rows.length) return text("No live Claude Code sessions found.");
-        return text(`Live sessions (${rows.length}):\n` + rows.map((r) => `- ${r.name}  ·  ${r.cwd}  ·  ${r.status}`).join("\n"));
+        return text(`Live sessions (${rows.length}):\n` + rows.map((r) => `- ${peerLabel(r, rows)}  ·  ${r.cwd}  ·  ${r.status}`).join("\n"));
       }
       const to = String(params.to || "").trim();
       const message = String(params.message ?? "");
@@ -267,7 +301,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const rows = await listClaudeSessions({ excludeSock: sockPath });
       if (!rows.length) { ctx.ui.notify("No live Claude sessions found.", "info"); return; }
-      ctx.ui.notify(`Reachable: ${rows.map((r) => r.name).join(", ")}`, "info");
+      ctx.ui.notify(`Reachable: ${rows.map((r) => peerLabel(r, rows)).join(", ")}`, "info");
     },
   });
 }
