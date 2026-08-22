@@ -17,7 +17,7 @@ import {
   firstFreeName, losesNameRace,
   listClaudeSessions, resolveTarget, sendToClaude, stripEnvelope, receiptFrame, sendFrame,
   peerLabel, planDedupe, renamePeer,
-  shouldArmReply, frameInbound, REPLY_MODE,
+  shouldArmReply, frameInbound, REPLY_MODE, ASK_MODE,
   slugFromCwd, peerNameBySock,
 } from "./claude-protocol.ts";
 import path from "node:path";
@@ -86,8 +86,8 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     }
   }
 
-  // Senders awaiting a relayed reply (their uds: addresses), populated on inbound.
-  const pendingReplies = new Set<string>();
+  // Senders blocked in `ask`, mapped to the hop count their reply carries.
+  const pendingReplies = new Map<string, number>();
   // Blocking `ask` waiters, keyed by the target's socket path.
   const askWaiters = new Map<string, AskWaiter[]>();
 
@@ -132,9 +132,10 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     try {
       // sendUserMessage always triggers a turn; when busy, steer into the current one.
       pi.sendUserMessage(framed, idle ? undefined : { deliverAs: "steer" });
-      // A relayed answer must not arm another answer, or the two sessions ping
-      // each other forever. See shouldArmReply.
-      if (shouldArmReply(fromAddr, env.fromMode)) pendingReplies.add(fromAddr);
+      // Only a blocked `ask` earns an automatic answer. A plain send is
+      // fire-and-forget: without this, our report to our own user gets
+      // scraped and delivered to the peer as though it were a message.
+      if (shouldArmReply(fromAddr, env.fromMode, env.hops)) pendingReplies.set(fromAddr, (env.hops ?? 0) + 1);
       ackDelivered(fromAddr, frame.msg_id);
       notify(`claude-link: message from ${who}`, "info");
     } catch (e) { dbg(`inject failed: ${(e as Error).message}`); }
@@ -171,9 +172,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     const targets = [...pendingReplies];
     pendingReplies.clear();
     dbg(`relaying reply to ${targets.length} sender(s): ${answer.slice(0, 60)}`);
-    for (const from of targets) {
+    for (const [from, hops] of targets) {
       if (!from.startsWith("uds:")) continue;
-      sendToClaude({ sock: from.slice(4), body: answer, from: ownFrom, fromName: selfName, fromMode: REPLY_MODE }).catch(() => {});
+      sendToClaude({ sock: from.slice(4), body: answer, from: ownFrom, fromName: selfName, fromMode: REPLY_MODE, hops }).catch(() => {});
     }
   }
 
@@ -228,9 +229,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
   // ---- outbound: the model-facing tool ------------------------------------
   const PARAMS = Type.Object({
     action: Type.Union([Type.Literal("list"), Type.Literal("send"), Type.Literal("ask")], {
-      description: "list = show reachable Claude sessions; send = fire-and-forget message; ask = send and wait for the reply",
+      description: "list = show reachable agent sessions; send = fire-and-forget, no answer comes back; ask = send and block for the answer",
     }),
-    to: Type.Optional(Type.String({ description: "Target Claude session name or id (for send/ask)" })),
+    to: Type.Optional(Type.String({ description: "Target agent session name or id (for send/ask)" })),
     message: Type.Optional(Type.String({ description: "Message text (for send/ask)" })),
   });
 
@@ -241,9 +242,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     label: "Claude Link",
     description:
       "Talk to Claude Code sessions running on this machine. " +
-      "action:list shows reachable sessions; action:send delivers a message (reply comes back into this session); " +
-      "action:ask sends and waits for the reply, returning it.",
-    promptSnippet: "Message Claude Code sessions on this machine.",
+      "action:list shows reachable sessions; action:send delivers a message and returns — nothing is relayed back, " +
+      "so the peer has to answer deliberately; action:ask sends and blocks until they answer, returning it.",
+    promptSnippet: "Message other agent sessions on this machine.",
     parameters: PARAMS,
     async execute(_id, params) {
       const excludeSock = sockPath;
@@ -265,14 +266,16 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       if (params.action === "send") {
         try {
           await sendToClaude({ sock: target.sock, body: message, from: ownFrom, fromName: selfName });
-          return text(`Delivered to "${target.name}". Any reply will arrive back in this session.`);
+          return text(`Delivered to "${target.name}". Nothing comes back automatically — use action:"ask" if you need an answer.`);
         } catch (e) {
           return text(`Error delivering to "${target.name}": ${(e as Error).message}`, true);
         }
       }
-      // action === "ask": send, then block for the reply.
+      // action === "ask": send, then block for the reply. ASK_MODE is what tells
+      // the receiver somebody is waiting, and is the only thing that earns an
+      // automatic relay of their next turn.
       try {
-        await sendToClaude({ sock: target.sock, body: message, from: ownFrom, fromName: selfName });
+        await sendToClaude({ sock: target.sock, body: message, from: ownFrom, fromName: selfName, fromMode: ASK_MODE });
       } catch (e) {
         return text(`Error delivering to "${target.name}": ${(e as Error).message}`, true);
       }

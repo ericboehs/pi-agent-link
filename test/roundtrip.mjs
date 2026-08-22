@@ -23,8 +23,8 @@ const lsock = path.join(P.ccSocksDir(), `${lpid}.sock`);
 const received = [];
 await P.bindSocket(lsock, (frame) => {
   if (frame?.type === "user") {
-    const { body, fromName } = P.stripEnvelope(frame.message?.content || "");
-    received.push({ from: fromName || frame.from, body });
+    const { body, fromName, fromMode, hops } = P.stripEnvelope(frame.message?.content || "");
+    received.push({ from: fromName || frame.from, body, fromMode, hops });
     console.log(`\n<<< listener got from ${fromName || frame.from}:\n${body}\n`);
   } else if (frame?.type === "control") {
     console.log(`<<< receipt: ${frame.action}=${frame.status}`);
@@ -53,12 +53,18 @@ const entry = piEntry();
 console.log(entry ? `pi registered as ${entry.name} (${entry.messagingSocketPath})` : "pi NOT registered");
 if (!entry) { pi.kill("SIGKILL"); await P.deregisterPeer(lpid, lsock); process.exit(1); }
 
-// ---- INBOUND test: message the pi session, expect a relayed reply ----
-console.log("\n>>> INBOUND: sending peer message to pi...");
+// ---- INBOUND test: ask the pi session, expect a relayed reply ----
+// ASK_MODE is what earns an automatic relay now: the sender is blocked, so the
+// receiver's next turn is shipped back. A plain `send` deliberately does not,
+// and asserting that here would only measure whether the model chose to answer.
+console.log("\n>>> INBOUND: sending peer question to pi...");
 await P.sendToClaude({ sock: entry.messagingSocketPath, from: `uds:${lsock}`, fromName: "claude-demo",
+  fromMode: P.ASK_MODE,
   body: "Reply with exactly: MESH-PI-OK followed by the value of 6*7. Nothing else." });
 for (let i = 0; i < 60 && !received.some((r) => /MESH-PI-OK/.test(r.body)); i++) await sleep(1000);
-const inboundOk = received.some((r) => /MESH-PI-OK/.test(r.body));
+const hit = received.find((r) => /MESH-PI-OK/.test(r.body));
+const inboundOk = Boolean(hit);
+if (hit) console.log(`    relayed with from-mode=${hit.fromMode ?? "(none)"} hops=${hit.hops ?? "(none)"}`);
 console.log(inboundOk ? "INBOUND round-trip ✓" : "INBOUND: no relayed reply captured");
 
 // ---- OUTBOUND test: pi uses the claude-link tool to message the listener ----

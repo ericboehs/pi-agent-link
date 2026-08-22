@@ -18,12 +18,13 @@ pi-claude-link does pi↔Claude.
 
 - **Pi appears in Claude.** Every pi session auto-registers as a peer — it shows in
   Claude Code's `/list-agents`, and Claude can `SendMessage` to it.
-- **Real-time inbound.** A message from Claude is injected into the live pi session
-  immediately (idle → starts a turn; busy → steers the current turn), and pi's reply
-  is relayed back to the sender automatically.
+- **Real-time inbound.** A message from a peer is injected into the live pi session
+  immediately (idle → starts a turn; busy → steers the current turn). A blocking
+  `ask` gets pi's next turn relayed back automatically; a plain `send` does not,
+  so answering one is a deliberate act.
 - **A `claude-link` tool for the pi model:**
-  - `claude-link({ action: "list" })` — list reachable Claude sessions
-  - `claude-link({ action: "send", to, message })` — send; the reply comes back into this session
+  - `claude-link({ action: "list" })` — list reachable sessions
+  - `claude-link({ action: "send", to, message })` — fire-and-forget; nothing is relayed back
   - `claude-link({ action: "ask", to, message })` — send and block until the reply, returned as the tool result
 - **`/claude-link`** command to list sessions from the pi UI, plus a bundled skill so
   natural language ("message the other session…") just works.
