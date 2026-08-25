@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch pi with pi-claude-link loaded, for interactive testing.
+# Launch pi with pi-agent-link loaded, for interactive testing.
 #
 # Requires pi on a supported Node (>= 20.19). If your `pi` runs on an older Node
 # and crashes with the undici "markAsUncloneable" error, point PI_CMD at a good

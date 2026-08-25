@@ -1,9 +1,9 @@
 // Full e2e round-trip:
 //  - stands up a throwaway "Claude" peer (listener) in Claude's registry
-//  - launches a real pi rpc session with the pi-claude-link extension
+//  - launches a real pi rpc session with the pi-agent-link extension
 //  - INBOUND: sends a peer message to the pi session; pi injects it in real time,
 //    answers, and relays the reply back to the listener
-//  - OUTBOUND: prompts pi to use the `claude-link` tool to message the listener
+//  - OUTBOUND: prompts pi to use the `agent-link` tool to message the listener
 // Never targets real sessions — only the throwaway listener + our own pi session.
 //
 // Run under a pi-compatible Node (>= 20.19). If `pi` on PATH is on an old Node:
@@ -34,9 +34,9 @@ await P.registerPeer({ pid: lpid, sessionId: `demo-${lpid}`, name: "claude-demo"
 console.log(`listener up as claude-demo (${lsock})`);
 
 // ---- launch pi ----
-const testCwd = path.join(tmpdir(), "pi-claude-link-rt"); mkdirSync(testCwd, { recursive: true });
+const testCwd = path.join(tmpdir(), "pi-agent-link-rt"); mkdirSync(testCwd, { recursive: true });
 const pi = spawnPi(["--mode", "rpc", "-e", EXT], {
-  cwd: testCwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, PI_CLAUDE_LINK_DEBUG: "1" },
+  cwd: testCwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, PI_AGENT_LINK_DEBUG: "1" },
 });
 let piOut = "";
 pi.stdout.on("data", (d) => (piOut += d));
@@ -67,14 +67,14 @@ const inboundOk = Boolean(hit);
 if (hit) console.log(`    relayed with from-mode=${hit.fromMode ?? "(none)"} hops=${hit.hops ?? "(none)"}`);
 console.log(inboundOk ? "INBOUND round-trip ✓" : "INBOUND: no relayed reply captured");
 
-// ---- OUTBOUND test: pi uses the claude-link tool to message the listener ----
-console.log("\n>>> OUTBOUND: prompting pi to use the claude-link tool...");
+// ---- OUTBOUND test: pi uses the agent-link tool to message the listener ----
+console.log("\n>>> OUTBOUND: prompting pi to use the agent-link tool...");
 received.length = 0;
 pi.stdin.write(JSON.stringify({ type: "prompt",
-  message: 'Use the claude-link tool: action "send", to "claude-demo", message "HELLO-FROM-PI". Then stop.' }) + "\n");
+  message: 'Use the agent-link tool: action "send", to "claude-demo", message "HELLO-FROM-PI". Then stop.' }) + "\n");
 for (let i = 0; i < 60 && !received.some((r) => /HELLO-FROM-PI/.test(r.body)); i++) await sleep(1000);
 const outboundOk = received.some((r) => /HELLO-FROM-PI/.test(r.body));
-console.log(outboundOk ? "OUTBOUND (claude-link tool send) ✓" : "OUTBOUND: listener did not receive the tool send");
+console.log(outboundOk ? "OUTBOUND (agent-link tool send) ✓" : "OUTBOUND: listener did not receive the tool send");
 
 // ---- cleanup ----
 pi.stdin.end(); await sleep(1500);

@@ -8,7 +8,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { unlinkSync } from "node:fs";
 
-const sock = path.join(tmpdir(), `pi-claude-link-sendclose-${process.pid}.sock`);
+const sock = path.join(tmpdir(), `pi-agent-link-sendclose-${process.pid}.sock`);
 let received = false;
 const server = await bindSocket(sock, () => { received = true; });
 

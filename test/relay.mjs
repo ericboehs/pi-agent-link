@@ -19,7 +19,7 @@ import test from "node:test";
 const { shouldArmReply, frameInbound, REPLY_MODE, ASK_MODE, MAX_HOPS, buildEnvelope, stripEnvelope } =
   await import("../claude-protocol.ts");
 
-const SOCK = "uds:/tmp/pi-claude-link-test.sock";
+const SOCK = "uds:/tmp/pi-agent-link-test.sock";
 
 test("a plain send never arms an answer", () => {
   assert.equal(shouldArmReply(SOCK, undefined), false);

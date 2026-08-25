@@ -1,16 +1,16 @@
 /**
- * pi-claude-link — mesh a pi coding-agent session with Claude Code.
+ * pi-agent-link — mesh a pi coding-agent session with Claude Code.
  *
  * On session start this extension registers the pi session as a peer in Claude's
  * cross-session registry (so it appears in Claude's /list-agents) and binds a
  * socket that speaks Claude's wire protocol. Inbound messages from Claude are
  * injected into the live pi session in real time; the pi model can list and
- * message Claude sessions via the `claude-link` tool.
+ * message agent sessions via the `agent-link` tool.
  *
  * Runs in-process; no daemon, no external transport — Claude's registry is the hub.
  */
 
-import type { AgentEndEvent, AgentMessage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentEndEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   ccSocksDir, bindSocket, registerPeer, updatePeer, deregisterPeer,
@@ -24,14 +24,15 @@ import path from "node:path";
 import { appendFileSync, existsSync } from "node:fs";
 import type { Server } from "node:net";
 
-// Debug logging: enabled by env PI_CLAUDE_LINK_DEBUG or the sentinel /tmp/pi-claude-link-debug.on
+// Debug logging: enabled by env PI_AGENT_LINK_DEBUG or the sentinel /tmp/pi-agent-link-debug.on
 // (pi may not propagate env to extensions in all modes, so the sentinel is handy).
 const dbg = (...a: unknown[]) => {
-  if (!(process.env.PI_CLAUDE_LINK_DEBUG || existsSync("/tmp/pi-claude-link-debug.on"))) return;
-  try { appendFileSync("/tmp/pi-claude-link-debug.log", `[pi-claude-link ${new Date().toISOString()}] ${a.join(" ")}\n`); } catch { /* */ }
+  if (!(process.env.PI_AGENT_LINK_DEBUG || existsSync("/tmp/pi-agent-link-debug.on"))) return;
+  try { appendFileSync("/tmp/pi-agent-link-debug.log", `[pi-agent-link ${new Date().toISOString()}] ${a.join(" ")}\n`); } catch { /* */ }
 };
 
 interface AskWaiter { resolve: (body: string) => void; timer: NodeJS.Timeout; }
+interface PendingReply { hops: number; who: string; receivedAt: number; preview: string; }
 
 export default function piMeshExtension(pi: ExtensionAPI) {
   let started = false;
@@ -86,10 +87,18 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     }
   }
 
-  // Senders blocked in `ask`, mapped to the hop count their reply carries.
-  const pendingReplies = new Map<string, number>();
+  // Senders blocked in `ask`, with enough metadata for `pending` and `reply`.
+  const pendingReplies = new Map<string, PendingReply>();
   // Blocking `ask` waiters, keyed by the target's socket path.
   const askWaiters = new Map<string, AskWaiter[]>();
+  let peerStatus = "idle";
+  const activeTools = new Map<string, string>();
+
+  async function setPeerStatus(status: string): Promise<void> {
+    if (!started || status === peerStatus) return;
+    peerStatus = status;
+    await updatePeer(pid, { status }).catch(() => {});
+  }
 
   const notify = (m: string, level: "info" | "warning" | "error" = "info") => {
     try { lastCtx?.ui.notify(m, level); } catch { /* no UI */ }
@@ -135,9 +144,16 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       // Only a blocked `ask` earns an automatic answer. A plain send is
       // fire-and-forget: without this, our report to our own user gets
       // scraped and delivered to the peer as though it were a message.
-      if (shouldArmReply(fromAddr, env.fromMode, env.hops)) pendingReplies.set(fromAddr, (env.hops ?? 0) + 1);
+      if (shouldArmReply(fromAddr, env.fromMode, env.hops)) {
+        pendingReplies.set(fromAddr, {
+          hops: (env.hops ?? 0) + 1,
+          who,
+          receivedAt: Date.now(),
+          preview: env.body.replace(/\s+/g, " ").trim().slice(0, 80),
+        });
+      }
       ackDelivered(fromAddr, frame.msg_id);
-      notify(`claude-link: message from ${who}`, "info");
+      notify(`agent-link: message from ${who}`, "info");
     } catch (e) { dbg(`inject failed: ${(e as Error).message}`); }
   }
 
@@ -151,7 +167,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
   }
 
   // ---- reply relay: after the pi turn answers, send its text back ----------
-  function lastAssistantText(messages: AgentMessage[]): string | undefined {
+  function lastAssistantText(messages: AgentEndEvent["messages"]): string | undefined {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m: any = messages[i];
       if (!m || m.role !== "assistant") continue;
@@ -172,9 +188,12 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     const targets = [...pendingReplies];
     pendingReplies.clear();
     dbg(`relaying reply to ${targets.length} sender(s): ${answer.slice(0, 60)}`);
-    for (const [from, hops] of targets) {
+    for (const [from, pending] of targets) {
       if (!from.startsWith("uds:")) continue;
-      sendToClaude({ sock: from.slice(4), body: answer, from: ownFrom, fromName: selfName, fromMode: REPLY_MODE, hops }).catch(() => {});
+      sendToClaude({
+        sock: from.slice(4), body: answer, from: ownFrom, fromName: selfName,
+        fromMode: REPLY_MODE, hops: pending.hops,
+      }).catch(() => {});
     }
   }
 
@@ -193,16 +212,17 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     selfName = chosen || firstFreeName(fallbackName(), await liveNames());
     try {
       server = await bindSocket(sockPath, (frame) => onFrame(frame));
-      await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: "idle", startedAt, nameSource });
+      peerStatus = "idle";
+      await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: peerStatus, startedAt, nameSource });
       dbg(`started name=${selfName} pid=${pid} sock=${sockPath} session=${sessionId}`);
       if (nameSource === "derived") void settleNameRace();
-      // Startup banner is off by default; opt in via env PI_CLAUDE_LINK_BANNER
-      // or the sentinel /tmp/pi-claude-link-banner.on.
-      if (process.env.PI_CLAUDE_LINK_BANNER || existsSync("/tmp/pi-claude-link-banner.on"))
-        notify(`pi-claude-link active as "${selfName}" — reachable from Claude Code /list-agents`, "info");
+      // Startup banner is off by default; opt in via env PI_AGENT_LINK_BANNER
+      // or the sentinel /tmp/pi-agent-link-banner.on.
+      if (process.env.PI_AGENT_LINK_BANNER || existsSync("/tmp/pi-agent-link-banner.on"))
+        notify(`pi-agent-link active as "${selfName}" — reachable from Claude Code /list-agents`, "info");
     } catch (e) {
       started = false;
-      notify(`pi-claude-link failed to start: ${(e as Error).message}`, "error");
+      notify(`pi-agent-link failed to start: ${(e as Error).message}`, "error");
     }
   }
 
@@ -217,46 +237,105 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     if (!started) await start(ctx);
     // Catch a name that landed after session_start (e.g. --name applied late).
     else await applyName(pi.getSessionName() ?? undefined);
+    await setPeerStatus("thinking");
   });
   pi.on("session_info_changed", async (event, ctx) => {
     lastCtx = ctx;
     if (!started) await start(ctx);
     await applyName((event as { name?: string })?.name);
   });
+  pi.on("tool_execution_start", async (event, ctx) => {
+    lastCtx = ctx;
+    activeTools.set(event.toolCallId, event.toolName);
+    await setPeerStatus(`tool:${event.toolName}`);
+  });
+  pi.on("tool_execution_end", async (event, ctx) => {
+    lastCtx = ctx;
+    activeTools.delete(event.toolCallId);
+    const remaining = [...activeTools.values()].at(-1);
+    await setPeerStatus(remaining ? `tool:${remaining}` : "thinking");
+  });
   pi.on("agent_end", async (event, ctx) => { lastCtx = ctx; relayReply(event); });
+  pi.on("agent_settled", async (_event, ctx) => {
+    lastCtx = ctx;
+    activeTools.clear();
+    await setPeerStatus("idle");
+  });
   pi.on("session_shutdown", async () => { await stop(); });
 
   // ---- outbound: the model-facing tool ------------------------------------
   const PARAMS = Type.Object({
-    action: Type.Union([Type.Literal("list"), Type.Literal("send"), Type.Literal("ask")], {
-      description: "list = show reachable agent sessions; send = fire-and-forget, no answer comes back; ask = send and block for the answer",
-    }),
-    to: Type.Optional(Type.String({ description: "Target agent session name or id (for send/ask)" })),
-    message: Type.Optional(Type.String({ description: "Message text (for send/ask)" })),
+    action: Type.Union([
+      Type.Literal("list"), Type.Literal("send"), Type.Literal("ask"),
+      Type.Literal("reply"), Type.Literal("pending"),
+    ], { description: "list sessions; send fire-and-forget; ask and wait; reply to a pending ask; list pending asks" }),
+    to: Type.Optional(Type.String({ description: "Target name or id; optional to disambiguate reply" })),
+    message: Type.Optional(Type.String({ description: "Message text for send, ask, or reply" })),
   });
 
-  const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], ...(isError && { isError: true }) });
+  const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], details: {}, ...(isError && { isError: true }) });
 
   pi.registerTool({
-    name: "claude-link",
-    label: "Claude Link",
+    name: "agent-link",
+    label: "Agent Link",
     description:
-      "Talk to Claude Code sessions running on this machine. " +
-      "action:list shows reachable sessions; action:send delivers a message and returns — nothing is relayed back, " +
-      "so the peer has to answer deliberately; action:ask sends and blocks until they answer, returning it.",
+      "Talk to agent sessions running on this machine: list, send, ask and wait, " +
+      "reply to a pending ask, or list pending asks.",
     promptSnippet: "Message other agent sessions on this machine.",
     parameters: PARAMS,
     async execute(_id, params) {
       const excludeSock = sockPath;
       if (params.action === "list") {
         const rows = await listClaudeSessions({ excludeSock });
-        if (!rows.length) return text("No live Claude Code sessions found.");
+        if (!rows.length) return text("No live agent sessions found.");
         return text(`Live sessions (${rows.length}):\n` + rows.map((r) => `- ${peerLabel(r, rows)}  ·  ${r.cwd}  ·  ${r.status}`).join("\n"));
+      }
+      if (params.action === "pending") {
+        if (!pendingReplies.size) return text("No pending inbound asks.");
+        const now = Date.now();
+        const lines = [...pendingReplies.values()].map((p) => {
+          const seconds = Math.max(0, Math.floor((now - p.receivedAt) / 1000));
+          return `- ${p.who}  ·  ${seconds}s  ·  ${p.preview}`;
+        });
+        return text(`Pending asks (${lines.length}):\n${lines.join("\n")}`);
       }
       const to = String(params.to || "").trim();
       const message = String(params.message ?? "");
-      if (!to) return text("Error: 'to' is required.", true);
       if (!message) return text("Error: 'message' is required.", true);
+
+      if (params.action === "reply") {
+        let targetEntry: [string, PendingReply] | undefined;
+        if (to) {
+          const res = await resolveTarget(to, { excludeSock });
+          if (res.error) {
+            const hint = res.candidates?.length ? ` Available: ${res.candidates.join(", ")}.` : "";
+            return text(`Error: ${res.error}.${hint}`, true);
+          }
+          const from = `uds:${res.target!.sock}`;
+          const pending = pendingReplies.get(from);
+          if (!pending) return text(`Error: no pending ask from "${res.target!.name}".`, true);
+          targetEntry = [from, pending];
+        } else if (pendingReplies.size === 1) {
+          targetEntry = pendingReplies.entries().next().value;
+        } else if (!pendingReplies.size) {
+          return text("Error: no pending inbound asks.", true);
+        } else {
+          return text(`Error: multiple pending asks; specify 'to'. Pending: ${[...pendingReplies.values()].map((p) => p.who).join(", ")}.`, true);
+        }
+        const [from, pending] = targetEntry!;
+        try {
+          await sendToClaude({
+            sock: from.slice(4), body: message, from: ownFrom, fromName: selfName,
+            fromMode: REPLY_MODE, hops: pending.hops,
+          });
+          pendingReplies.delete(from);
+          return text(`Replied to "${pending.who}".`);
+        } catch (e) {
+          return text(`Error replying to "${pending.who}": ${(e as Error).message}`, true);
+        }
+      }
+
+      if (!to) return text("Error: 'to' is required.", true);
       const res = await resolveTarget(to, { excludeSock });
       if (res.error) {
         const hint = res.candidates?.length ? ` Available: ${res.candidates.join(", ")}.` : "";
@@ -298,13 +377,13 @@ export default function piMeshExtension(pi: ExtensionAPI) {
   });
 
   // ---- convenience command -------------------------------------------------
-  pi.registerCommand("claude-link", {
+  pi.registerCommand("agent-link", {
     description: "List Claude Code sessions you can message; 'dedupe' un-collides their names",
     handler: async (args, ctx) => {
       const rows = await listClaudeSessions({ excludeSock: sockPath });
       if (args.trim() === "dedupe") {
         // Include ourselves: our name is one of the ones that can collide.
-        const all = [...rows, { pid, name: selfName, cwd: sessionCwd, status: "idle", sock: sockPath, startedAt, entrypoint: "pi", nameSource }];
+        const all = [...rows, { pid, name: selfName, cwd: sessionCwd, status: peerStatus, sock: sockPath, startedAt, entrypoint: "pi", nameSource }];
         const plans = planDedupe(all);
         if (!plans.length) { ctx.ui.notify("No duplicate names among live sessions.", "info"); return; }
         const done: string[] = [];
@@ -326,7 +405,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
         return;
       }
       if (!rows.length) { ctx.ui.notify("No live Claude sessions found.", "info"); return; }
-      ctx.ui.notify(`Reachable: ${rows.map((r) => peerLabel(r, rows)).join(", ")}`, "info");
+      ctx.ui.notify(`Reachable: ${rows.map((r) => `${peerLabel(r, rows)} [${r.status}]`).join(", ")}`, "info");
     },
   });
 }

@@ -11,7 +11,7 @@ import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 
-const home = mkdtempSync(path.join(tmpdir(), "pi-claude-link-naming-"));
+const home = mkdtempSync(path.join(tmpdir(), "pi-agent-link-naming-"));
 process.env.HOME = home;
 const REG = path.join(home, ".claude", "sessions");
 mkdirSync(REG, { recursive: true });

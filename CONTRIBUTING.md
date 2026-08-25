@@ -7,7 +7,7 @@ Thanks for your interest! This is a small, dependency-free pi extension.
 - `index.ts` — the extension (default-exported `ExtensionAPI` factory).
 - `claude-protocol.ts` — Claude Code's cross-session wire protocol (registry, sockets,
   envelope). The single place to update if Claude's protocol changes.
-- `skills/pi-claude-link/SKILL.md` — teaches the pi model to use the `claude-link` tool.
+- `skills/pi-agent-link/SKILL.md` — teaches the pi model to use the `agent-link` tool.
 - `test/` — end-to-end harnesses driving a real pi rpc session.
 
 No build step: pi runs the TypeScript directly.
@@ -49,8 +49,8 @@ PI_CODING_AGENT_DIR=/tmp/pi-scratch node --experimental-strip-types test/reg-tes
 ```
 
 The harnesses only use throwaway sessions/listeners — they never message your real
-sessions. Set `PI_CLAUDE_LINK_DEBUG=1` (or `touch /tmp/pi-claude-link-debug.on`) for
-logs at `/tmp/pi-claude-link-debug.log`.
+sessions. Set `PI_AGENT_LINK_DEBUG=1` (or `touch /tmp/pi-agent-link-debug.on`) for
+logs at `/tmp/pi-agent-link-debug.log`.
 
 ## Guidelines
 

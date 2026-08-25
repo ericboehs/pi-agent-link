@@ -6,11 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `reply` answers the sole pending inbound ask without reconstructing its sender;
+  `to` disambiguates when multiple agents are waiting.
+- `pending` lists unanswered inbound asks with sender, age, and a short preview.
+- Pi peers now publish live `idle`, `thinking`, and `tool:<name>` status in Claude's
+  session registry and `agent-link` session lists.
+
 ### Changed
-- Startup banner is now off by default. Opt in via env `PI_CLAUDE_LINK_BANNER`
-  or the sentinel file `/tmp/pi-claude-link-banner.on`. (Previously the banner
-  printed by default and could be silenced with `PI_CLAUDE_LINK_QUIET` /
-  `/tmp/pi-claude-link-quiet.on`; those no longer have any effect.)
+- The package is now `pi-agent-link`, with `agent-link` and `/agent-link` as the
+  model-facing tool and UI command. Claude-specific transport internals retain
+  their descriptive names.
+- Startup banner is now off by default. Opt in via env `PI_AGENT_LINK_BANNER`
+  or the sentinel file `/tmp/pi-agent-link-banner.on`.
 
 ### Fixed
 - Peer name now tracks the pi session's display name. Previously the name was
@@ -35,4 +43,4 @@ Initial release.
 - Sender display names resolved from Claude's registry to match `/list-agents`.
 - Dependency-free `claude-protocol.ts` port of Claude's cross-session wire protocol.
 
-[0.1.0]: https://github.com/alonw0/pi-claude-link/releases/tag/v0.1.0
+[0.1.0]: https://github.com/ericboehs/pi-agent-link/releases/tag/v0.1.0

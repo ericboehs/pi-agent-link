@@ -1,6 +1,6 @@
 # Security
 
-pi-claude-link bridges two AI coding agents so they can send each other messages.
+pi-agent-link bridges two AI coding agents so they can send each other messages.
 Because a delivered message becomes input to an agent that can run tools with your
 permissions, please read this before enabling it broadly.
 
@@ -33,7 +33,7 @@ permissions, please read this before enabling it broadly.
 ## Reporting a vulnerability
 
 Please report suspected vulnerabilities privately via a
-[GitHub security advisory](https://github.com/alonw0/pi-claude-link/security/advisories/new)
+[GitHub security advisory](https://github.com/ericboehs/pi-agent-link/security/advisories/new)
 rather than a public issue. Include reproduction steps and the impact you observed.
 We aim to acknowledge within a few days.
 
