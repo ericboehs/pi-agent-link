@@ -10,7 +10,6 @@ sessions — pi and Claude Code both — and you can reach them with the
 **`agent-link`** tool:
 
 - `agent-link({ action: "list" })` — show live sessions and their status.
-  Each row also carries the peer's one-line activity summary when it has one.
 - `agent-link({ action: "send", to: "<name>", message: "…" })` — deliver a message
   and move on; nothing comes back automatically.
 - `agent-link({ action: "ask", to: "<name>", message: "…" })` — send, wait, and return

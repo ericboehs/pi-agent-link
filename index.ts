@@ -22,7 +22,6 @@ import {
 } from "./claude-protocol.ts";
 import path from "node:path";
 import { appendFileSync, existsSync, mkdirSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import type { Server } from "node:net";
 
 // Debug logging: enabled by env PI_AGENT_LINK_DEBUG or the sentinel /tmp/pi-agent-link-debug.on
@@ -69,7 +68,6 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       selfName = firstFreeName(fallbackName(), rows.map((r) => r.name));
       await updatePeer(pid, { name: selfName, nameSource: "derived" }).catch(() => {});
       syncSummaryFile();
-      persistDerivedName();
       dbg(`yielded a contested name, now ${selfName}`);
     }
   }
@@ -86,24 +84,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     if (started) {
       await updatePeer(pid, { name: selfName, nameSource }).catch(() => {});
       syncSummaryFile();
-      if (nameSource === "derived") persistDerivedName();
       dbg(`renamed peer to ${selfName}`);
       if (nameSource === "derived") await settleNameRace();
     }
-  }
-
-  // Stamp derived peer names onto the session so psst /resume show `pi-dotfiles-2`
-  // after the process exits (instead of a short uuid). Never overwrite a name
-  // the user set with `/name` or `--name`.
-  function persistDerivedName(): void {
-    if (nameSource !== "derived" || !selfName) return;
-    const current = (pi.getSessionName() || "").trim();
-    if (current === selfName) return;
-    const base = fallbackName();
-    // Don't clobber a real `/name`. Stale derived stamps (`pi-dotfiles` before
-    // the uniqueness race) are in the same series and may be replaced.
-    if (current && current !== base && !current.startsWith(`${base}-`)) return;
-    try { pi.setSessionName(selfName); } catch { /* */ }
   }
 
   // Senders blocked in `ask`, with enough metadata for `pending` and `reply`.
@@ -122,14 +105,13 @@ export default function piMeshExtension(pi: ExtensionAPI) {
 
   // ---- shared-cache mirror (for psst; ~/.claude stays Claude's) -------------
   // psst must not read ~/.claude (guarded on this machine), so we mirror the
-  // name/status/summary triple into a neutral cache file that psst can read.
+  // name/status into a neutral cache file that psst can read.
   // Same layout root both sides: $XDG_CACHE_HOME/agent-link/summaries | ~/.cache/…
   function summaryCacheDir(): string {
     const base = process.env.XDG_CACHE_HOME || path.join(HOME, ".cache");
     return path.join(base, "agent-link", "summaries");
   }
   const summaryFile = () => path.join(summaryCacheDir(), `${pid}.json`);
-  let lastSummary = "";
 
   function syncSummaryFile(): void {
     if (!started) return;
@@ -137,7 +119,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       mkdirSync(summaryCacheDir(), { recursive: true });
       const body = JSON.stringify({
         pid, name: selfName, cwd: sessionCwd, status: peerStatus,
-        summary: lastSummary, updatedAt: Date.now(),
+        updatedAt: Date.now(),
       });
       // Atomic write (tmp + rename) so readers never see a torn file.
       const tmp = `${summaryFile()}.${process.pid}.tmp`;
@@ -148,92 +130,6 @@ export default function piMeshExtension(pi: ExtensionAPI) {
 
   function clearSummaryFile(): void {
     try { unlinkSync(summaryFile()); } catch { /* */ }
-  }
-
-  // ---- activity summary (Claude agent-view style row text) -----------------
-  // Two tiers, mirroring Claude Code's agent view: an instant snippet written
-  // from the session's own output, then an async small-model one-liner at end
-  // of turn. A `turnSeq` counter keeps a slow polish from overwriting a newer
-  // turn's state.
-  const SUMMARY_ENABLED = process.env.PI_AGENT_LINK_SUMMARY !== "0";
-  // Local-first default: free, no subscription. Override with e.g.
-  // PI_AGENT_LINK_SUMMARY_MODEL=anthropic/claude-haiku-4-5.
-  const SUMMARY_MODEL = process.env.PI_AGENT_LINK_SUMMARY_MODEL || "ollama/glm-5.3-flash";
-  let turnSeq = 0;
-
-  const oneLine = (t: string, max = 120) => t.replace(/\s+/g, " ").trim().slice(0, max);
-
-  async function publishSummary(text: string): Promise<void> {
-    const line = oneLine(text);
-    if (!line || !started) return;
-    lastSummary = line;
-    dbg(`summary: ${line}`);
-    syncSummaryFile();
-    await updatePeer(pid, { summary: line }).catch(() => {});
-  }
-
-  function pickSummaryModel(ctx: ExtensionContext): any {
-    const reg: any = ctx.modelRegistry;
-    if (typeof reg?.find === "function" && SUMMARY_MODEL.includes("/")) {
-      const [provider, id] = SUMMARY_MODEL.split("/", 2);
-      const found = reg.find(provider, id);
-      if (found) return found;
-    }
-    const avail: any[] = typeof reg?.getAvailable === "function" ? reg.getAvailable() : [];
-    // Cheap-class fallback (Claude: "no Haiku-class model → use the main model").
-    return avail.find((m) => /flash|haiku|mini|nano|lite/i.test(String(m?.id || ""))) || ctx.model;
-  }
-
-  async function polishSummary(ctx: ExtensionContext, seq: number, text: string): Promise<void> {
-    if (!SUMMARY_ENABLED || !text) return;
-    const model = pickSummaryModel(ctx);
-    if (!model) return;
-    dbg(`polishing summary with ${model.id ?? model}`);
-    try {
-      const res: any = await (ctx.modelRegistry as any).complete(
-        model,
-        {
-          messages: [
-            {
-              role: "user",
-              content:
-                "You write one-line status summaries for a coding-agent session picker. " +
-                "Given the agent's latest response, write ONE short line (max 10 words) describing " +
-                "what it just did, produced, or is asking about. Plain text only — no quotes, no trailing period, no markdown.\n\n" +
-                `Response:\n${text.slice(0, 2000)}`,
-            },
-          ],
-        },
-        { maxTokens: 60, reasoning: "minimal", cacheRetention: "none", signal: AbortSignal.timeout(20_000), sessionId: randomUUID() },
-      );
-      const out = (res?.content || [])
-        .filter((c: any) => c?.type === "text")
-        .map((c: any) => c.text)
-        .join(" ")
-        .trim();
-      if (!out || seq !== turnSeq) return; // stale: a newer turn superseded it
-      dbg(`polished summary: ${out}`);
-      await publishSummary(out);
-    } catch { /* summary is best-effort; the snippet stands */ }
-  }
-
-  // Instant summary from the prompt that just started the turn.
-  async function publishPromptSummary(ctx: ExtensionContext): Promise<void> {
-    try {
-      const branch: any[] = ctx.sessionManager.getBranch() || [];
-      for (let i = branch.length - 1; i >= 0; i--) {
-        const e: any = branch[i];
-        const m = e?.message;
-        if (e?.type !== "message" || m?.role !== "user") continue;
-        const c = m.content;
-        const t = typeof c === "string"
-          ? c
-          : Array.isArray(c)
-            ? c.filter((b: any) => b?.type === "text").map((b: any) => b.text).join(" ")
-            : "";
-        if (t.trim()) { await publishSummary(`▸ ${oneLine(t, 100)}`); return; }
-      }
-    } catch { /* best effort */ }
   }
 
   const notify = (m: string, level: "info" | "warning" | "error" = "info") => {
@@ -353,10 +249,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       await registerPeer({ pid, sessionId, name: selfName, cwd, sockPath, status: peerStatus, startedAt, nameSource });
       syncSummaryFile();
       dbg(`started name=${selfName} pid=${pid} sock=${sockPath} session=${sessionId}`);
-      if (nameSource === "derived") {
-        persistDerivedName();
-        void settleNameRace().then(() => persistDerivedName());
-      }
+      if (nameSource === "derived") void settleNameRace();
       // Startup banner is off by default; opt in via env PI_AGENT_LINK_BANNER
       // or the sentinel /tmp/pi-agent-link-banner.on.
       if (process.env.PI_AGENT_LINK_BANNER || existsSync("/tmp/pi-agent-link-banner.on"))
@@ -379,9 +272,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     if (!started) await start(ctx);
     // Catch a name that landed after session_start (e.g. --name applied late).
     else await applyName(pi.getSessionName() ?? undefined);
-    turnSeq++;
     await setPeerStatus("thinking");
-    void publishPromptSummary(ctx);
   });
   pi.on("session_info_changed", async (event, ctx) => {
     lastCtx = ctx;
@@ -402,12 +293,6 @@ export default function piMeshExtension(pi: ExtensionAPI) {
   pi.on("agent_end", async (event, ctx) => {
     lastCtx = ctx;
     relayReply(event);
-    // Row summary: instant snippet from our own output, then async model polish.
-    const out = lastAssistantText(event.messages || []);
-    if (out) {
-      const seq = turnSeq;
-      void publishSummary(out).then(() => polishSummary(ctx, seq, out));
-    }
   });
   pi.on("agent_settled", async (_event, ctx) => {
     lastCtx = ctx;
@@ -441,11 +326,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
       if (params.action === "list") {
         const rows = await listClaudeSessions({ excludeSock });
         if (!rows.length) return text("No live agent sessions found.");
-        return text(`Live sessions (${rows.length}):\n` + rows.map((r) => {
-          const bits = [peerLabel(r, rows), r.cwd, r.status];
-          if (r.summary) bits.push(r.summary);
-          return `- ${bits.join("  ·  ")}`;
-        }).join("\n"));
+        return text(`Live sessions (${rows.length}):\n` + rows.map((r) => `- ${peerLabel(r, rows)}  ·  ${r.cwd}  ·  ${r.status}`).join("\n"));
       }
       if (params.action === "pending") {
         if (!pendingReplies.size) return text("No pending inbound asks.");
@@ -562,7 +443,7 @@ export default function piMeshExtension(pi: ExtensionAPI) {
         return;
       }
       if (!rows.length) { ctx.ui.notify("No live Claude sessions found.", "info"); return; }
-      ctx.ui.notify(`Reachable: ${rows.map((r) => `${peerLabel(r, rows)} [${r.status}]${r.summary ? ` — ${r.summary}` : ""}`).join(", ")}`, "info");
+      ctx.ui.notify(`Reachable: ${rows.map((r) => `${peerLabel(r, rows)} [${r.status}]`).join(", ")}`, "info");
     },
   });
 }

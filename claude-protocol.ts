@@ -24,8 +24,6 @@ export interface ClaudePeer {
   name: string;
   cwd: string;
   status: string;
-  /** One-line description of what the session is doing (Claude agent-view style). */
-  summary?: string;
   kind?: string;
   startedAt?: number;
   sock: string;
@@ -95,7 +93,6 @@ export async function listClaudeSessions(opts: { excludeSock?: string } = {}): P
       name: typeof s.name === "string" ? s.name : `pid ${s.pid}`,
       cwd: typeof s.cwd === "string" ? s.cwd : "?",
       status: typeof s.status === "string" ? s.status : "unknown",
-      summary: typeof s.summary === "string" && s.summary ? s.summary : undefined,
       kind: s.kind,
       startedAt: s.startedAt,
       entrypoint: typeof s.entrypoint === "string" ? s.entrypoint : undefined,
@@ -421,7 +418,6 @@ export async function registerPeer(o: {
     name: o.name,
     nameSource: o.nameSource || "derived",
     status: o.status || "idle",
-    summary: "",
   };
   await writeFile(path.join(CLAUDE_REGISTRY, `${o.pid}.json`), JSON.stringify(entry, null, 2));
 }
