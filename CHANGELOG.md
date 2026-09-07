@@ -12,6 +12,13 @@ All notable changes to this project are documented here. The format follows
 - `pending` lists unanswered inbound asks with sender, age, and a short preview.
 - Pi peers now publish live `idle`, `thinking`, and `tool:<name>` status in Claude's
   session registry and `agent-link` session lists.
+- Agent-view style activity summaries: an instant one-line snippet from the
+  session's own output at turn boundaries, polished by a cheap model
+  (`PI_AGENT_LINK_SUMMARY_MODEL`, default `ollama/glm-5.3-flash` with minimal
+  reasoning — local and free; off via `PI_AGENT_LINK_SUMMARY=0`) at end of turn. Published to the registry entry
+  and mirrored to `~/.cache/agent-link/summaries/<pid>.json` for psst
+  (which must not read `~/.claude`). `agent-link list` and `/agent-link`
+  show the summary per peer.
 
 ### Changed
 - The package is now `pi-agent-link`, with `agent-link` and `/agent-link` as the

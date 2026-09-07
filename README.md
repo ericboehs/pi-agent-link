@@ -18,7 +18,9 @@ pi-agent-link does pi↔Claude.
 
 - **Pi appears in Claude.** Every pi session auto-registers as a peer — it shows in
   Claude Code's `/list-agents`, and Claude can `SendMessage` to it. Pi peers publish
-  live `idle`, `thinking`, and `tool:<name>` status.
+  live `idle`, `thinking`, and `tool:<name>` status plus a one-line activity
+  summary (Claude agent-view style: instant snippet from the session's own
+  output, polished by a cheap model at end of turn).
 - **Real-time inbound.** A message from a peer is injected into the live pi session
   immediately (idle → starts a turn; busy → steers the current turn). A blocking
   `ask` gets pi's next turn relayed back automatically; a plain `send` does not,
@@ -104,12 +106,15 @@ directly.
   The sender's display name is resolved from Claude's registry so it matches `/list-agents`.
 - **pi lifecycle events** → keep the registry status current as `idle`, `thinking`,
   or `tool:<name>`.
-- **`agent_end`** → relay pi's reply back to the recorded sender(s).
+- **`agent_end`** → relay pi's reply back to the recorded sender(s); also publish
+  the row summary (instant snippet, then async cheap-model polish) to the
+  registry and the shared `~/.cache/agent-link/summaries/<pid>.json` mirror
+  (psst reads the mirror — it must not read `~/.claude`).
+- **`session_shutdown`** → unlink the socket, remove the registry entry and the
+  summary mirror.
 - **`agent-link` tool** → `list` reads Claude's registry (live-filtered); `send`/`ask`
   connect to the target's socket and write a peer frame; `reply` answers a pending
   inbound ask explicitly, while `pending` lists unresolved asks.
-- **`session_shutdown`** → unlink the socket and remove the registry entry.
-
 There's no broker or daemon — **Claude's session registry is the hub.** Anything else
 registered in that hub is also visible to `list`.
 
