@@ -7,6 +7,7 @@ Thanks for your interest! This is a small, dependency-free pi extension.
 - `index.ts` — the extension (default-exported `ExtensionAPI` factory).
 - `claude-protocol.ts` — Claude Code's cross-session wire protocol (registry, sockets,
   envelope). The single place to update if Claude's protocol changes.
+- `mentions.ts` — `@` autocomplete + `@name` prompt annotation (no pi imports).
 - `skills/pi-agent-link/SKILL.md` — teaches the pi model to use the `agent-link` tool.
 - `test/` — end-to-end harnesses driving a real pi rpc session.
 
@@ -39,6 +40,7 @@ export PI_CMD="$HOME/.nvm/versions/node/v22.16.0/bin/node \
 node --experimental-strip-types test/reg-test.mjs     # registration + cleanup
 node --experimental-strip-types test/roundtrip.mjs    # inbound relay + outbound tool
 node --experimental-strip-types --test test/naming.mjs  # name collisions (no pi needed)
+node --experimental-strip-types --test test/mentions.mjs  # @ autocomplete / mentions (no pi needed)
 ```
 
 `reg-test` and `roundtrip` load this extension with `-e`, which clashes with an

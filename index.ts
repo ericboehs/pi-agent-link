@@ -20,6 +20,10 @@ import {
   shouldArmReply, frameInbound, REPLY_MODE, ASK_MODE,
   slugFromCwd, peerNameBySock, HOME,
 } from "./claude-protocol.ts";
+import {
+  extractAtQuery, isPathishQuery, filterPeers, findAgentMentions,
+  mentionHint, formatAgentItem, isInboundPeerPrompt,
+} from "./mentions.ts";
 import path from "node:path";
 import { appendFileSync, existsSync, mkdirSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import type { Server } from "node:net";
@@ -135,6 +139,51 @@ export default function piMeshExtension(pi: ExtensionAPI) {
   const notify = (m: string, level: "info" | "warning" | "error" = "info") => {
     try { lastCtx?.ui.notify(m, level); } catch { /* no UI */ }
   };
+
+  // Live peers for @ autocomplete and @mention hints. Socket probes are not
+  // free, so keep a short TTL rather than hitting the registry on every key.
+  const PEER_CACHE_MS = 2000;
+  let peerCache: { at: number; rows: Awaited<ReturnType<typeof listClaudeSessions>> } | undefined;
+  async function cachedPeers() {
+    if (peerCache && Date.now() - peerCache.at < PEER_CACHE_MS) return peerCache.rows;
+    const rows = await listClaudeSessions({ excludeSock: sockPath });
+    peerCache = { at: Date.now(), rows };
+    return rows;
+  }
+
+  function installAutocomplete(ctx: ExtensionContext) {
+    if (!ctx.hasUI) return;
+    ctx.ui.addAutocompleteProvider((current) => ({
+      triggerCharacters: ["@"],
+      async getSuggestions(lines, cursorLine, cursorCol, options) {
+        const currentLine = lines[cursorLine] ?? "";
+        const textBeforeCursor = currentLine.slice(0, cursorCol);
+        const at = extractAtQuery(textBeforeCursor);
+        if (!at || isPathishQuery(at.query)) {
+          return current.getSuggestions(lines, cursorLine, cursorCol, options);
+        }
+
+        const [files, peers] = await Promise.all([
+          current.getSuggestions(lines, cursorLine, cursorCol, options),
+          cachedPeers().catch(() => []),
+        ]);
+        if (options.signal.aborted) return files;
+
+        const agents = filterPeers(peers, at.query).slice(0, 8).map((p) => formatAgentItem(p, HOME));
+        if (!agents.length) return files;
+        return {
+          prefix: files?.prefix ?? at.prefix,
+          items: [...agents, ...(files?.items ?? [])],
+        };
+      },
+      applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+      },
+      shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+        return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+      },
+    }));
+  }
 
   // ---- inbound: a peer frame arrived on our socket -------------------------
   function onFrame(frame: any): void {
@@ -266,7 +315,19 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     await deregisterPeer(pid, sockPath).catch(() => {});
   }
 
-  pi.on("session_start", async (_e, ctx) => { await start(ctx); });
+  pi.on("session_start", async (_e, ctx) => {
+    await start(ctx);
+    installAutocomplete(ctx);
+  });
+  pi.on("before_agent_start", async (event) => {
+    const prompt = event.prompt || "";
+    if (!prompt || isInboundPeerPrompt(prompt)) return;
+    const peers = await cachedPeers().catch(() => []);
+    if (!peers.length) return;
+    const mentions = findAgentMentions(prompt, peers);
+    if (!mentions.length) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${mentionHint(mentions)}` };
+  });
   pi.on("turn_start", async (_e, ctx) => {
     lastCtx = ctx;
     if (!started) await start(ctx);
@@ -318,8 +379,9 @@ export default function piMeshExtension(pi: ExtensionAPI) {
     label: "Agent Link",
     description:
       "Talk to agent sessions running on this machine: list, send, ask and wait, " +
-      "reply to a pending ask, or list pending asks.",
-    promptSnippet: "Message other agent sessions on this machine.",
+      "reply to a pending ask, or list pending asks. When the user writes @name " +
+      "(for example @foo), that addresses a live session — use this tool, not read.",
+    promptSnippet: "Message other agent sessions on this machine. @name in the user prompt addresses a live session (use this tool, not read).",
     parameters: PARAMS,
     async execute(_id, params) {
       const excludeSock = sockPath;

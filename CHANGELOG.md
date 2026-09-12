@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Typing `@` in the pi prompt autocompletes live agent-link session names alongside
+  files. `@foo …` is annotated so the model messages that session with the
+  `agent-link` tool instead of treating it as a file.
 - `reply` answers the sole pending inbound ask without reconstructing its sender;
   `to` disambiguates when multiple agents are waiting.
 - `pending` lists unanswered inbound asks with sender, age, and a short preview.

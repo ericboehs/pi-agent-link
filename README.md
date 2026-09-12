@@ -31,6 +31,9 @@ pi-agent-link does pi↔Claude.
   - `agent-link({ action: "pending" })` — list unanswered inbound asks
 - **`/agent-link`** command to list sessions from the pi UI, plus a bundled skill so
   natural language ("message the other session…") just works.
+- **`@` mentions in the pi prompt.** Typing `@` autocompletes live agent names
+  alongside files. `@foo check the tests` tells this session to message `foo`
+  via agent-link.
 
 ## Requirements
 
@@ -66,6 +69,8 @@ Remove with `pi remove pi-agent-link`.
 ```
 list the agent sessions             → calls agent-link({action:"list"})
 message claude-code-7b: build passes → calls agent-link({action:"send", ...})
+@foo check the tests                → @ autocompletes live agents; this session
+                                      messages foo via agent-link
 ```
 
 or `/agent-link` to list. Replies arrive back in your pi session automatically.
@@ -94,8 +99,8 @@ inbound message on the Claude side, set in `~/.claude/settings.json`:
 ## How it works
 
 A single in-process TypeScript extension (`index.ts`) plus a dependency-free port of
-Claude's wire protocol (`claude-protocol.ts`). No build step — pi runs TypeScript
-directly.
+Claude's wire protocol (`claude-protocol.ts`) and `@`-mention helpers (`mentions.ts`).
+No build step — pi runs TypeScript directly.
 
 - **`session_start`** → bind a Unix socket at `‹Claude's socket dir›/cc-socks/<pid>.sock`
   and write `~/.claude/sessions/<pid>.json`, registering the pi session as a Claude peer.
@@ -110,6 +115,8 @@ directly.
 - **`agent-link` tool** → `list` reads Claude's registry (live-filtered); `send`/`ask`
   connect to the target's socket and write a peer frame; `reply` answers a pending
   inbound ask explicitly, while `pending` lists unresolved asks.
+- **`@` autocomplete** → live session names are stacked on pi's file `@` completions;
+  a matching `@name` in the submitted prompt is annotated so the model uses this tool.
 There's no broker or daemon — **Claude's session registry is the hub.** Anything else
 registered in that hub is also visible to `list`.
 
