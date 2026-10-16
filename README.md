@@ -1,5 +1,12 @@
 # pi-agent-link
 
+> [!IMPORTANT]
+> **Moved to [Boehsline](https://github.com/ericboehs/pi-boehsline)** (`packages/agent-link`), with its full history. This repository is archived and gets no more changes. Install Boehsline instead:
+>
+> ```bash
+> pi install git:github.com/ericboehs/pi-boehsline
+> ```
+
 Two-way messaging between [pi coding-agent](https://github.com/earendil-works/pi)
 sessions and [Claude Code](https://claude.com/claude-code) sessions.
 
